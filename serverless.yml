@@ -1,0 +1,264 @@
+
+service: itsm-auth
+frameworkVersion: '3'
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: false
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 15
+
+  iam:
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
+
+  environment:
+    USERS_TABLE: ${self:service}-${sls:stage}-usuarios
+    TENANTS_TABLE: ${self:service}-${sls:stage}-tenants
+    ATTACHMENTS_BUCKET: ${self:service}-adjuntos-${sls:stage}-${aws:accountId}
+    JWT_SECRET_PARAMETER: /itsm-auth/${sls:stage}/jwt-secret
+    JWT_ISSUER: itsm-auth
+    JWT_EXP_HOURS: '8'
+
+package:
+  patterns:
+    - '!tests/**'
+    - '!seed/**'
+    - '!scripts/**'
+    - '!docs/**'
+    - '!.venv/**'
+    - '!node_modules/**'
+    - '!.git/**'
+
+functions:
+
+  login:
+    handler: src.handlers.auth.login
+    events:
+      - http:
+          path: /auth/login
+          method: post
+          cors: true
+
+  me:
+    handler: src.handlers.auth.me
+    events:
+      - http:
+          path: /auth/me
+          method: get
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  listUsers:
+    handler: src.handlers.users.list_users
+    events:
+      - http:
+          path: /usuarios
+          method: get
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  createUser:
+    handler: src.handlers.users.create_user
+    events:
+      - http:
+          path: /usuarios
+          method: post
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  getUser:
+    handler: src.handlers.users.get_user
+    events:
+      - http:
+          path: /usuarios/{id}
+          method: get
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  updateUser:
+    handler: src.handlers.users.update_user
+    events:
+      - http:
+          path: /usuarios/{id}
+          method: put
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  deactivateUser:
+    handler: src.handlers.users.deactivate_user
+    events:
+      - http:
+          path: /usuarios/{id}
+          method: delete
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  currentTenant:
+    handler: src.handlers.tenants.current_tenant
+    events:
+      - http:
+          path: /tenants/actual
+          method: get
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  presignUpload:
+    handler: src.handlers.files.presign_upload
+    events:
+      - http:
+          path: /archivos/presign-subida
+          method: post
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  presignDownload:
+    handler: src.handlers.files.presign_download
+    events:
+      - http:
+          path: /archivos/presign-descarga
+          method: get
+          authorizer:
+            name: authorizer
+            type: TOKEN
+            identitySource: method.request.header.Authorization
+          cors: true
+
+  authorizer:
+    handler: src.handlers.authorizer.authorize
+    memorySize: 128
+    timeout: 5
+
+resources:
+  Resources:
+
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.USERS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+          - AttributeName: usuario_id
+            AttributeType: S
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+          - AttributeName: usuario_id
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: GSI-email
+            KeySchema:
+              - AttributeName: tenant_id
+                KeyType: HASH
+              - AttributeName: email
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    TenantsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.TENANTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: tenant_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: tenant_id
+            KeyType: HASH
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.ATTACHMENTS_BUCKET}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - HEAD
+              AllowedOrigins:
+                - '*'
+              ExposedHeaders:
+                - ETag
+              MaxAge: 3000
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+
+    # Permitir que otros API Gateway de esta cuenta
+    # invoquen el Authorizer centralizado.
+    AuthorizerCrossApiGatewayPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName:
+          Fn::GetAtt:
+            - AuthorizerLambdaFunction
+            - Arn
+        Principal: apigateway.amazonaws.com
+        SourceArn:
+          Fn::Sub: arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:*/authorizers/*
+
+    # Publicar el ARN para los otros microservicios.
+    AuthorizerArnParameter:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Name: /itsm/${sls:stage}/authorizer-arn
+        Type: String
+        Value:
+          Fn::GetAtt:
+            - AuthorizerLambdaFunction
+            - Arn
+        Description: ARN del Lambda Authorizer compartido
+
+  Outputs:
+    AuthorizerArn:
+      Value:
+        Fn::GetAtt:
+          - AuthorizerLambdaFunction
+          - Arn

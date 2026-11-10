@@ -1,0 +1,14 @@
+{
+  "name": "itsm-auth",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless deployment tooling for the ITSM authentication service",
+  "devDependencies": {
+    "serverless": "3.40.0",
+    "serverless-python-requirements": "^6.1.2"
+  },
+  "scripts": {
+    "deploy:dev": "serverless deploy --stage dev --region us-east-1",
+    "remove:dev": "serverless remove --stage dev --region us-east-1"
+  }
+}
