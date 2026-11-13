@@ -158,8 +158,8 @@ functions:
 
   authorizer:
     handler: src.handlers.authorizer.authorize
-    memorySize: 128
-    timeout: 5
+    memorySize: 256
+    timeout: 15
 
 resources:
   Resources:
